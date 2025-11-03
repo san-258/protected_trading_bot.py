@@ -1,0 +1,1441 @@
+# -*- coding: utf-8 -*-
+"""
+================================================================================
+                    🤖 AI ASSISTANT INSTRUCTIONS 🤖
+                    COPY THIS BEFORE ANY MODIFICATIONS
+================================================================================
+
+I'm using a protected trading bot. Read the AI ASSISTANT INSTRUCTIONS at the 
+top of my code before making any changes.
+
+I'm using a protected trading bot architecture. The CORE ENTRY LOGIC is in the 
+ProtectedEntryLogic class and MUST NOT be modified. You can modify everything 
+else (risk management, indicators, execution, etc.) but DO NOT touch the entry 
+validation methods or locked parameters.
+
+If I ask you to change entry criteria, WARN me that this changes the core 
+strategy and ask for explicit confirmation.
+
+--------------------------------------------------------------------------------
+                        PROTECTED COMPONENTS
+--------------------------------------------------------------------------------
+❌ DO NOT MODIFY:
+  • ProtectedEntryLogic class (entire class)
+  • EMA periods: 5, 10, 35
+  • MACD pre-confirmation logic
+  • Volume confirmation threshold (1.0)
+  • Required indicators list
+  • Entry validation methods (validate_long_entry, validate_short_entry)
+  • Next-candle entry timing logic
+
+✅ SAFE TO MODIFY:
+  • RiskManager (stop loss, take profit, position sizing)
+  • IndicatorCalculator (add more indicators, keep required ones)
+  • NotificationManager (Discord, Telegram, email, etc.)
+  • Order execution logic
+  • Account management
+  • Logging and monitoring
+  • Data sources and polling frequency
+  • Exit conditions (can add more)
+  • Statistics and reporting
+
+--------------------------------------------------------------------------------
+                        CORE STRATEGY RULES
+--------------------------------------------------------------------------------
+Entry Requirements (ALL must be true):
+  1. EMA 5 crosses above/below EMA 10 on 5-minute timeframe
+  2. MACD was ALREADY bullish/bearish BEFORE the EMA cross (not simultaneous)
+  3. Price must be above/below EMA 35 (trend filter)
+  4. Volume on crossover bar > 20-period average
+  5. Entry executed at OPEN of NEXT candle after signal detection
+
+Strategy Version: 1.0.0
+Last Modified: 2025-01-03
+Modified By: Initial Implementation
+
+--------------------------------------------------------------------------------
+                        BEFORE MAKING CHANGES
+--------------------------------------------------------------------------------
+1. Run integrity check: bot.signal_manager.entry_logic.verify_integrity()
+2. If modifying ProtectedEntryLogic: Get explicit user permission
+3. Document all changes with date and reason
+4. Update version number if core logic changes
+5. Test in paper trading before live deployment
+
+================================================================================
+"""
+
+import sys
+import io
+import os
+import pandas as pd
+import numpy as np
+import time
+import threading
+import requests
+from datetime import datetime, timedelta, timezone
+from collections import deque
+from typing import Dict, Optional, List, Tuple
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# Fix encoding for various environments
+try:
+    if hasattr(sys.stdout, 'buffer'):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+except:
+    pass
+
+# Alpaca imports
+try:
+    import alpaca_trade_api as tradeapi
+    from alpaca_trade_api.stream import Stream
+    ALPACA_AVAILABLE = True
+    print("✅ Alpaca Trade API imported successfully")
+except ImportError as e:
+    print(f"❌ Alpaca Trade API import failed: {e}")
+    print("Install with: pip install alpaca-trade-api")
+    ALPACA_AVAILABLE = False
+
+
+# ============================================================================
+# PROTECTED CORE ENTRY LOGIC - DO NOT MODIFY WITHOUT PERMISSION
+# ============================================================================
+class ProtectedEntryLogic:
+    """
+    ⚠️ CRITICAL: THIS CLASS CONTAINS THE CORE TRADING STRATEGY ⚠️
+    
+    DO NOT MODIFY THIS CLASS WITHOUT EXPLICIT USER PERMISSION
+    
+    Core Strategy Rules (ALL conditions must be TRUE for entry):
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    1. EMA 5 crosses above/below EMA 10 (5-minute timeframe)
+    2. MACD was ALREADY bullish/bearish BEFORE the EMA cross
+    3. Price must be above/below EMA 35 (trend filter)
+    4. Volume on crossover bar > 20-period average
+    5. Entry executed at opening of NEXT candle after signal
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    
+    This is NOT a scoring system - ALL conditions are mandatory.
+    No partial entries. No compensation. All or nothing.
+    
+    Version: 1.0.0
+    Last Modified: 2025-01-03
+    Modified By: Initial Implementation
+    Reason: Core strategy implementation
+    """
+    
+    VERSION = "1.0.0"
+    STRATEGY_NAME = "EMA_5_10_CROSS_WITH_MACD_PRECONFIRMATION"
+    LAST_MODIFIED = "2025-01-03"
+    
+    def __init__(self):
+        """Initialize with LOCKED parameters - DO NOT MODIFY"""
+        self.EMA_FAST = 5
+        self.EMA_SLOW = 10
+        self.EMA_TREND_FILTER = 35
+        self.VOLUME_LOOKBACK = 20
+        self.MIN_VOLUME_RATIO = 1.0
+        
+    def validate_long_entry(self, indicators: Dict) -> Tuple[bool, str]:
+        """
+        Validate LONG entry - ALL conditions REQUIRED.
+        
+        DO NOT MODIFY THIS METHOD.
+        
+        Returns:
+            (is_valid: bool, reason: str)
+        """
+        reasons = []
+        
+        # CONDITION 1: EMA 5 JUST crossed above EMA 10
+        ema_cross_up = (
+            indicators['EMA_5'] > indicators['EMA_10'] and
+            indicators['prev_EMA_5'] <= indicators['prev_EMA_10']
+        )
+        if not ema_cross_up:
+            return False, "No EMA 5/10 bullish crossover detected"
+        reasons.append("✓ EMA 5 crossed above EMA 10")
+        
+        # CONDITION 2: MACD was ALREADY bullish BEFORE the cross
+        macd_already_bullish = indicators['prev_MACD'] > indicators['prev_MACD_signal']
+        if not macd_already_bullish:
+            return False, "MACD was not already bullish before EMA cross"
+        reasons.append("✓ MACD was already bullish (pre-confirmed)")
+        
+        # CONDITION 3: Price above EMA 35 (trend filter)
+        price_above_35 = indicators['close'] > indicators['EMA_35']
+        if not price_above_35:
+            return False, f"Price ${indicators['close']:.2f} below EMA35 ${indicators['EMA_35']:.2f}"
+        reasons.append(f"✓ Price above EMA 35 (${indicators['close']:.2f} > ${indicators['EMA_35']:.2f})")
+        
+        # CONDITION 4: Volume above average
+        volume_confirmed = indicators['volume_ratio'] > self.MIN_VOLUME_RATIO
+        if not volume_confirmed:
+            return False, f"Volume ratio {indicators['volume_ratio']:.2f} below threshold"
+        reasons.append(f"✓ Volume above average (ratio: {indicators['volume_ratio']:.2f})")
+        
+        # ALL CONDITIONS MET
+        return True, " | ".join(reasons)
+    
+    def validate_short_entry(self, indicators: Dict) -> Tuple[bool, str]:
+        """
+        Validate SHORT entry - ALL conditions REQUIRED.
+        
+        DO NOT MODIFY THIS METHOD.
+        
+        Returns:
+            (is_valid: bool, reason: str)
+        """
+        reasons = []
+        
+        # CONDITION 1: EMA 5 JUST crossed below EMA 10
+        ema_cross_down = (
+            indicators['EMA_5'] < indicators['EMA_10'] and
+            indicators['prev_EMA_5'] >= indicators['prev_EMA_10']
+        )
+        if not ema_cross_down:
+            return False, "No EMA 5/10 bearish crossover detected"
+        reasons.append("✓ EMA 5 crossed below EMA 10")
+        
+        # CONDITION 2: MACD was ALREADY bearish BEFORE the cross
+        macd_already_bearish = indicators['prev_MACD'] < indicators['prev_MACD_signal']
+        if not macd_already_bearish:
+            return False, "MACD was not already bearish before EMA cross"
+        reasons.append("✓ MACD was already bearish (pre-confirmed)")
+        
+        # CONDITION 3: Price below EMA 35 (trend filter)
+        price_below_35 = indicators['close'] < indicators['EMA_35']
+        if not price_below_35:
+            return False, f"Price ${indicators['close']:.2f} above EMA35 ${indicators['EMA_35']:.2f}"
+        reasons.append(f"✓ Price below EMA 35 (${indicators['close']:.2f} < ${indicators['EMA_35']:.2f})")
+        
+        # CONDITION 4: Volume above average
+        volume_confirmed = indicators['volume_ratio'] > self.MIN_VOLUME_RATIO
+        if not volume_confirmed:
+            return False, f"Volume ratio {indicators['volume_ratio']:.2f} below threshold"
+        reasons.append(f"✓ Volume above average (ratio: {indicators['volume_ratio']:.2f})")
+        
+        # ALL CONDITIONS MET
+        return True, " | ".join(reasons)
+    
+    def get_required_indicators(self) -> List[str]:
+        """
+        Return list of indicators required by this strategy.
+        DO NOT MODIFY - these are mandatory.
+        """
+        return [
+            'close', 'EMA_5', 'EMA_10', 'EMA_35',
+            'prev_EMA_5', 'prev_EMA_10',
+            'MACD', 'MACD_signal', 'prev_MACD', 'prev_MACD_signal',
+            'volume_ratio'
+        ]
+    
+    def verify_integrity(self) -> bool:
+        """
+        Verify core parameters haven't been tampered with.
+        Run this before trading to ensure strategy integrity.
+        """
+        expected = {
+            'EMA_FAST': 5,
+            'EMA_SLOW': 10,
+            'EMA_TREND_FILTER': 35,
+            'VOLUME_LOOKBACK': 20,
+            'MIN_VOLUME_RATIO': 1.0
+        }
+        
+        for param, expected_val in expected.items():
+            actual_val = getattr(self, param)
+            if actual_val != expected_val:
+                raise ValueError(
+                    f"🚨 INTEGRITY VIOLATION DETECTED 🚨\n"
+                    f"Parameter '{param}' was modified!\n"
+                    f"Expected: {expected_val}\n"
+                    f"Actual: {actual_val}\n"
+                    f"DO NOT TRADE until this is resolved!"
+                )
+        return True
+    
+    def get_info(self) -> Dict:
+        """Get strategy information"""
+        return {
+            'version': self.VERSION,
+            'strategy_name': self.STRATEGY_NAME,
+            'last_modified': self.LAST_MODIFIED,
+            'parameters': {
+                'EMA_FAST': self.EMA_FAST,
+                'EMA_SLOW': self.EMA_SLOW,
+                'EMA_TREND_FILTER': self.EMA_TREND_FILTER,
+                'VOLUME_LOOKBACK': self.VOLUME_LOOKBACK,
+                'MIN_VOLUME_RATIO': self.MIN_VOLUME_RATIO
+            }
+        }
+
+
+# ============================================================================
+# MODIFIABLE COMPONENTS - Safe to modify and enhance
+# ============================================================================
+
+class IndicatorCalculator:
+    """
+    Calculate technical indicators.
+    
+    SAFE TO MODIFY:
+    - Add new indicators
+    - Optimize calculations
+    - Add caching
+    
+    DO NOT REMOVE:
+    - Required indicators (check ProtectedEntryLogic.get_required_indicators())
+    """
+    
+    def __init__(self, max_bars=200):
+        self.max_bars = max_bars
+    
+    def calculate_indicators(self, bars_data: deque) -> Optional[Dict]:
+        """
+        Calculate all indicators.
+        
+        REQUIRED indicators must always be calculated.
+        Additional indicators can be added freely.
+        """
+        if len(bars_data) < 50:
+            return None
+            
+        bars_list = list(bars_data)
+        df = pd.DataFrame(bars_list)
+        
+        if df.empty or len(df) < 50:
+            return None
+        
+        try:
+            # ═══════════════════════════════════════════════════════════
+            # REQUIRED INDICATORS - DO NOT REMOVE
+            # ═══════════════════════════════════════════════════════════
+            
+            # EMAs (5, 10, 35 are REQUIRED)
+            df['EMA_5'] = df['close'].ewm(span=5, adjust=False).mean()
+            df['EMA_10'] = df['close'].ewm(span=10, adjust=False).mean()
+            df['EMA_35'] = df['close'].ewm(span=35, adjust=False).mean()
+            
+            # MACD (REQUIRED)
+            exp1 = df['close'].ewm(span=12, adjust=False).mean()
+            exp2 = df['close'].ewm(span=26, adjust=False).mean()
+            df['MACD'] = exp1 - exp2
+            df['MACD_signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+            
+            # Volume (REQUIRED)
+            df['volume_sma'] = df['volume'].rolling(20).mean()
+            df['volume_ratio'] = df['volume'] / df['volume_sma'].replace(0, 1)
+            
+            # ═══════════════════════════════════════════════════════════
+            # OPTIONAL INDICATORS - Safe to add/modify/remove
+            # ═══════════════════════════════════════════════════════════
+            
+            # Additional EMAs
+            df['EMA_50'] = df['close'].ewm(span=50, adjust=False).mean()
+            df['EMA_200'] = df['close'].ewm(span=200, adjust=False).mean()
+            
+            # MACD Histogram
+            df['MACD_histogram'] = df['MACD'] - df['MACD_signal']
+            
+            # RSI
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+            rs = gain / loss.replace(0, 0.0001)
+            df['RSI'] = 100 - (100 / (1 + rs))
+            
+            # ATR
+            df['high_low'] = df['high'] - df['low']
+            df['high_close'] = abs(df['high'] - df['close'].shift())
+            df['low_close'] = abs(df['low'] - df['close'].shift())
+            df['tr'] = df[['high_low', 'high_close', 'low_close']].max(axis=1)
+            df['ATR'] = df['tr'].rolling(14).mean()
+            
+            # Bollinger Bands
+            df['BB_middle'] = df['close'].rolling(20).mean()
+            df['BB_std'] = df['close'].rolling(20).std()
+            df['BB_upper'] = df['BB_middle'] + (df['BB_std'] * 2)
+            df['BB_lower'] = df['BB_middle'] - (df['BB_std'] * 2)
+            
+            latest = df.iloc[-1]
+            prev = df.iloc[-2] if len(df) > 1 else latest
+            
+            # Return all indicators
+            return {
+                # ══════ REQUIRED - DO NOT REMOVE ══════
+                'close': latest['close'],
+                'EMA_5': latest['EMA_5'],
+                'EMA_10': latest['EMA_10'],
+                'EMA_35': latest['EMA_35'],
+                'prev_EMA_5': prev['EMA_5'],
+                'prev_EMA_10': prev['EMA_10'],
+                'MACD': latest['MACD'],
+                'MACD_signal': latest['MACD_signal'],
+                'prev_MACD': prev['MACD'],
+                'prev_MACD_signal': prev['MACD_signal'],
+                'volume_ratio': latest['volume_ratio'],
+                
+                # ══════ OPTIONAL - Safe to add/remove ══════
+                'EMA_50': latest['EMA_50'],
+                'EMA_200': latest['EMA_200'],
+                'MACD_histogram': latest['MACD_histogram'],
+                'RSI': latest['RSI'],
+                'ATR': latest['ATR'],
+                'BB_upper': latest['BB_upper'],
+                'BB_middle': latest['BB_middle'],
+                'BB_lower': latest['BB_lower'],
+                'high': latest['high'],
+                'low': latest['low'],
+                'open': latest['open'],
+                'volume': latest['volume']
+            }
+            
+        except Exception as e:
+            print(f"⚠️  Error calculating indicators: {e}")
+            return None
+
+
+class RiskManager:
+    """
+    Risk management and position sizing.
+    
+    SAFE TO MODIFY:
+    - All parameters (stop loss, take profit, etc.)
+    - Position sizing logic
+    - Exit conditions
+    - Risk calculations
+    """
+    
+    def __init__(self, initial_capital=250000):
+        self.initial_capital = initial_capital
+        
+        # ══════ ALL PARAMETERS SAFE TO MODIFY ══════
+        self.risk_per_trade = 0.01  # 1% risk per trade
+        self.max_position_size = initial_capital * 0.15  # 15% max position
+        self.stop_loss = 0.008  # 0.8% stop loss
+        self.take_profit_1 = 0.015  # 1.5% first target
+        self.take_profit_2 = 0.025  # 2.5% second target
+        self.trailing_stop = 0.005  # 0.5% trailing stop
+        self.min_profit_for_trailing = 0.005  # 0.5% profit before trailing activates
+    
+    def calculate_position_size(self, current_price: float, atr: float, 
+                                buying_power: float) -> int:
+        """
+        Calculate position size based on risk management.
+        Safe to modify this logic.
+        """
+        try:
+            # Calculate risk amount
+            risk_amount = min(
+                buying_power * self.risk_per_trade,
+                self.max_position_size * self.risk_per_trade
+            )
+            
+            # Calculate stop distance (use ATR or fixed percentage, whichever is larger)
+            stop_distance = max(atr * 2, current_price * self.stop_loss)
+            
+            # Position size based on risk
+            position_size = int(risk_amount / stop_distance)
+            
+            # Apply maximum position size constraint
+            max_shares = int(self.max_position_size / current_price)
+            position_size = min(position_size, max_shares)
+            
+            # Apply buying power constraint (use 95% to leave buffer)
+            max_affordable = int(buying_power * 0.95 / current_price)
+            position_size = min(position_size, max_affordable)
+            
+            return max(position_size, 0)
+            
+        except Exception as e:
+            print(f"⚠️  Error calculating position size: {e}")
+            return 0
+    
+    def check_exit_conditions(self, position: Dict, current_price: float) -> Optional[str]:
+        """
+        Check if position should be exited.
+        Safe to modify and add new exit conditions.
+        """
+        if position['qty'] == 0:
+            return None
+        
+        try:
+            if position['type'] == 'LONG':
+                # Update highest price for trailing stop
+                if current_price > position['highest_price']:
+                    position['highest_price'] = current_price
+                
+                # Calculate P&L percentage
+                entry_price = position['entry_price']
+                if entry_price == 0:
+                    return None
+                    
+                pnl_pct = (current_price - entry_price) / entry_price
+                
+                # Stop Loss
+                if pnl_pct <= -self.stop_loss:
+                    return "Stop Loss"
+                
+                # Take Profit targets
+                if pnl_pct >= self.take_profit_2:
+                    return "Take Profit 2"
+                elif pnl_pct >= self.take_profit_1:
+                    return "Take Profit 1"
+                
+                # Trailing Stop (only if in profit)
+                if pnl_pct > self.min_profit_for_trailing:
+                    trailing_stop_price = position['highest_price'] * (1 - self.trailing_stop)
+                    if current_price < trailing_stop_price:
+                        return "Trailing Stop"
+            
+            elif position['type'] == 'SHORT':
+                # Update lowest price for trailing stop
+                if current_price < position['highest_price'] or position['highest_price'] == 0:
+                    position['highest_price'] = current_price
+                
+                # Calculate P&L percentage for short
+                entry_price = position['entry_price']
+                if entry_price == 0:
+                    return None
+                    
+                pnl_pct = (entry_price - current_price) / entry_price
+                
+                # Stop Loss
+                if pnl_pct <= -self.stop_loss:
+                    return "Stop Loss"
+                
+                # Take Profit targets
+                if pnl_pct >= self.take_profit_2:
+                    return "Take Profit 2"
+                elif pnl_pct >= self.take_profit_1:
+                    return "Take Profit 1"
+                
+                # Trailing Stop (only if in profit)
+                if pnl_pct > self.min_profit_for_trailing:
+                    trailing_stop_price = position['highest_price'] * (1 + self.trailing_stop)
+                    if current_price > trailing_stop_price:
+                        return "Trailing Stop"
+            
+            return None
+            
+        except Exception as e:
+            print(f"⚠️  Error checking exit conditions: {e}")
+            return None
+
+
+class SignalManager:
+    """
+    Manages signal generation using protected entry logic.
+    
+    DO NOT MODIFY:
+    - Core signal generation logic
+    - Calls to ProtectedEntryLogic
+    
+    SAFE TO MODIFY:
+    - Pending signal storage
+    - Signal logging
+    - Signal filtering
+    """
+    
+    def __init__(self):
+        self.entry_logic = ProtectedEntryLogic()
+        self.pending_signals = {}
+        
+        # Verify integrity on initialization
+        try:
+            self.entry_logic.verify_integrity()
+            info = self.entry_logic.get_info()
+            print(f"✅ Core strategy verified: {info['strategy_name']} v{info['version']}")
+        except ValueError as e:
+            print(f"🚨 INTEGRITY CHECK FAILED:\n{e}")
+            raise
+    
+    def generate_signal(self, symbol: str, indicators: Dict) -> int:
+        """
+        Generate trading signal using protected entry logic.
+        
+        DO NOT MODIFY THIS METHOD - it enforces the core strategy.
+        
+        Returns:
+            1 = Long signal
+           -1 = Short signal
+            0 = No signal
+        """
+        try:
+            # Verify all required indicators are present
+            required = self.entry_logic.get_required_indicators()
+            missing = [ind for ind in required if ind not in indicators]
+            
+            if missing:
+                print(f"⚠️  {symbol}: Missing required indicators: {missing}")
+                return 0
+            
+            # Check LONG entry signal
+            is_valid_long, reason = self.entry_logic.validate_long_entry(indicators)
+            if is_valid_long:
+                print(f"\n🎯 VALID LONG SIGNAL DETECTED: {symbol}")
+                print(f"   {reason}")
+                print(f"   Current Price: ${indicators['close']:.2f}")
+                print(f"   RSI: {indicators.get('RSI', 0):.1f}")
+                print(f"   Will enter on next candle open\n")
+                return 1
+            
+            # Check SHORT entry signal
+            is_valid_short, reason = self.entry_logic.validate_short_entry(indicators)
+            if is_valid_short:
+                print(f"\n🎯 VALID SHORT SIGNAL DETECTED: {symbol}")
+                print(f"   {reason}")
+                print(f"   Current Price: ${indicators['close']:.2f}")
+                print(f"   RSI: {indicators.get('RSI', 0):.1f}")
+                print(f"   Will enter on next candle open\n")
+                return -1
+            
+            return 0
+            
+        except Exception as e:
+            print(f"⚠️  Error generating signal for {symbol}: {e}")
+            return 0
+    
+    def register_pending_signal(self, symbol: str, signal: int, qty: int, 
+                               price: float, indicators: Dict):
+        """Register signal to execute on next candle - Safe to modify"""
+        self.pending_signals[symbol] = {
+            'signal': signal,
+            'qty': qty,
+            'detection_price': price,
+            'timestamp': datetime.now(),
+            'indicators': indicators
+        }
+        signal_type = "LONG" if signal == 1 else "SHORT"
+        print(f"📊 {signal_type} signal registered for {symbol}")
+        print(f"   Detection price: ${price:.2f}")
+        print(f"   Will enter {qty} shares on next candle open")
+    
+    def get_pending_signal(self, symbol: str) -> Optional[Dict]:
+        """Get pending signal for symbol - Safe to modify"""
+        return self.pending_signals.get(symbol)
+    
+    def clear_pending_signal(self, symbol: str):
+        """Clear pending signal after execution - Safe to modify"""
+        if symbol in self.pending_signals:
+            del self.pending_signals[symbol]
+
+
+class NotificationManager:
+    """
+    Handle notifications (Discord, email, etc.).
+    COMPLETELY SAFE TO MODIFY - add any notification services you want.
+    """
+    
+    def __init__(self, discord_webhook: str = None, telegram_token: str = None):
+        self.discord_webhook = discord_webhook
+        self.telegram_token = telegram_token
+    
+    def send(self, message: str, priority: str = "normal"):
+        """
+        Send notification through available channels.
+        Safe to modify and add new notification methods.
+        """
+        # Discord
+        if self.discord_webhook:
+            self._send_discord(message)
+        
+        # Telegram
+        if self.telegram_token:
+            self._send_telegram(message)
+        
+        # Print to console always
+        if priority == "high":
+            print(f"🚨 {message}")
+        else:
+            print(f"📢 {message}")
+    
+    def _send_discord(self, message: str):
+        """Send to Discord"""
+        try:
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            formatted = f"[{timestamp}] {message}"
+            
+            resp = requests.post(
+                self.discord_webhook,
+                json={"content": formatted},
+                timeout=10
+            )
+            
+            if resp.status_code not in (200, 204):
+                print(f"⚠️  Discord notification failed: {resp.status_code}")
+                
+        except Exception as e:
+            print(f"⚠️  Discord notification error: {e}")
+    
+    def _send_telegram(self, message: str):
+        """Send to Telegram - implement if needed"""
+        pass  # Add Telegram implementation here
+
+
+# ============================================================================
+# MAIN TRADING BOT
+# ============================================================================
+
+class ProtectedTradingBot:
+    """
+    Main trading bot using protected architecture.
+    
+    This class coordinates all components and handles the trading flow.
+    Safe to modify most aspects except calls to ProtectedEntryLogic.
+    """
+    
+    def __init__(self, account_configs: List[Dict], symbols: List[str],
+                 initial_capital: float = 250000, discord_webhook: str = None):
+        
+        if not ALPACA_AVAILABLE:
+            raise Exception("❌ Alpaca API not available. Install: pip install alpaca-trade-api")
+        
+        # Configuration
+        self.symbols = symbols
+        self.account_configs = account_configs
+        self.accounts = {}
+        
+        # Initialize protected components
+        self.signal_manager = SignalManager()
+        self.indicator_calculator = IndicatorCalculator()
+        self.risk_manager = RiskManager(initial_capital)
+        self.notifier = NotificationManager(discord_webhook)
+        
+        # Bot state
+        self.is_running = False
+        self.bot_start_time = datetime.now()
+        self.last_activity_time = datetime.now()
+        
+        # Statistics
+        self.stats = {
+            'total_signals': 0,
+            'total_trades': 0,
+            'total_bars': 0,
+            'long_signals': 0,
+            'short_signals': 0,
+            'entries_executed': 0,
+            'exits_executed': 0
+        }
+        
+        # Print initialization info
+        strategy_info = self.signal_manager.entry_logic.get_info()
+        print("\n" + "="*70)
+        print("🤖 PROTECTED TRADING BOT - INITIALIZATION")
+        print("="*70)
+        print(f"Strategy: {strategy_info['strategy_name']}")
+        print(f"Version: {strategy_info['version']}")
+        print(f"Last Modified: {strategy_info['last_modified']}")
+        print(f"Symbols: {', '.join(symbols)}")
+        print(f"Accounts: {len(account_configs)}")
+        print(f"Initial Capital: ${initial_capital:,.2f}")
+        print("="*70 + "\n")
+    
+    def is_market_hours(self) -> bool:
+        """Check if market is currently open"""
+        try:
+            eastern = timezone(timedelta(hours=-5))
+            now_et = datetime.now(eastern)
+            
+            # Check if weekend
+            if now_et.weekday() >= 5:
+                return False
+            
+            # Market hours: 9:30 AM - 4:00 PM ET
+            market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+            market_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+            
+            return market_open <= now_et <= market_close
+            
+        except Exception as e:
+            print(f"⚠️  Error checking market hours: {e}")
+            return True  # Default to allowing trading if check fails
+    
+    def setup_account(self, config: Dict) -> Optional[str]:
+        """Setup connection for a single account"""
+        try:
+            api = tradeapi.REST(
+                key_id=config['api_key'],
+                secret_key=config['secret_key'],
+                base_url=config['base_url'],
+                api_version="v2"
+            )
+            
+            # Test connection
+            account = api.get_account()
+            account_id = account.account_number
+            
+            print(f"✅ Connected to account: {account_id}")
+            print(f"   Portfolio Value: ${float(account.portfolio_value):,.2f}")
+            print(f"   Buying Power: ${float(account.buying_power):,.2f}")
+            print(f"   Status: {account.status}")
+            
+            # Initialize account data structures
+            self.accounts[account_id] = {
+                'api': api,
+                'config': config,
+                'symbol_data': {symbol: deque(maxlen=200) for symbol in self.symbols},
+                'positions': {
+                    symbol: {
+                        'qty': 0,
+                        'entry_price': 0,
+                        'entry_time': None,
+                        'highest_price': 0,
+                        'type': None
+                    }
+                    for symbol in self.symbols
+                },
+                'stats': {
+                    'signals': 0,
+                    'trades': 0,
+                    'bars': 0,
+                    'wins': 0,
+                    'losses': 0,
+                    'total_pnl': 0.0
+                }
+            }
+            
+            return account_id
+            
+        except Exception as e:
+            print(f"❌ Failed to connect account: {e}")
+            return None
+    
+    def get_latest_bars(self, account_id: str) -> Dict:
+        """Fetch latest 1-minute bars for all symbols"""
+        account_data = self.accounts.get(account_id)
+        if not account_data:
+            return {}
+        
+        api = account_data['api']
+        bars_data = {}
+        
+        try:
+            for symbol in self.symbols:
+                try:
+                    bars = api.get_bars(
+                        symbol,
+                        timeframe='1Min',
+                        limit=1,
+                        adjustment='raw',
+                        feed='iex'
+                    ).df
+                    
+                    if not bars.empty:
+                        latest = bars.iloc[-1]
+                        bars_data[symbol] = {
+                            'timestamp': latest.name,
+                            'open': float(latest['open']),
+                            'high': float(latest['high']),
+                            'low': float(latest['low']),
+                            'close': float(latest['close']),
+                            'volume': int(latest['volume'])
+                        }
+                        
+                except Exception as e:
+                    # Silently skip symbols with errors
+                    continue
+            
+            return bars_data
+            
+        except Exception as e:
+            print(f"⚠️  Error fetching bars for account {account_id}: {e}")
+            return {}
+    
+    def place_order(self, account_id: str, symbol: str, qty: int, 
+                   side: str, price: float) -> Optional[str]:
+        """Place order with Alpaca"""
+        account_data = self.accounts.get(account_id)
+        if not account_data:
+            return None
+        
+        api = account_data['api']
+        
+        try:
+            if qty <= 0:
+                print(f"⚠️  Invalid quantity for {symbol}: {qty}")
+                return None
+            
+            # Submit market order
+            order = api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side=side,
+                type='market',
+                time_in_force='day'
+            )
+            
+            # Log order
+            print(f"\n💰 ORDER EXECUTED")
+            print(f"   Account: {account_id}")
+            print(f"   Action: {side.upper()}")
+            print(f"   Symbol: {symbol}")
+            print(f"   Quantity: {qty} shares")
+            print(f"   Price: ~${price:.2f}")
+            print(f"   Order ID: {order.id}\n")
+            
+            # Update statistics
+            self.stats['total_trades'] += 1
+            account_data['stats']['trades'] += 1
+            
+            if side == 'buy':
+                self.stats['entries_executed'] += 1
+            else:
+                self.stats['exits_executed'] += 1
+            
+            # Send notification
+            self.notifier.send(
+                f"📈 {side.upper()} {qty} {symbol} @ ${price:.2f} (Account: {account_id})"
+            )
+            
+            return order.id
+            
+        except Exception as e:
+            print(f"❌ Order failed for {symbol}: {e}")
+            self.notifier.send(f"❌ Order failed: {symbol} {side} ({e})", priority="high")
+            return None
+    
+    def update_position(self, account_id: str, symbol: str, qty: int, 
+                       price: float, side: str):
+        """Update internal position tracking"""
+        account_data = self.accounts.get(account_id)
+        if not account_data:
+            return
+        
+        position = account_data['positions'][symbol]
+        
+        if side == 'buy':
+            # Opening position
+            position['qty'] = qty
+            position['entry_price'] = price
+            position['entry_time'] = datetime.now()
+            position['highest_price'] = price
+            position['type'] = 'LONG'
+            
+            print(f"✅ POSITION OPENED")
+            print(f"   Symbol: {symbol}")
+            print(f"   Quantity: {qty} shares")
+            print(f"   Entry Price: ${price:.2f}")
+            print(f"   Total Cost: ${qty * price:,.2f}\n")
+            
+        elif side == 'sell':
+            # Closing position
+            if position['qty'] > 0:
+                pnl = position['qty'] * (price - position['entry_price'])
+                pnl_pct = (price - position['entry_price']) / position['entry_price'] * 100
+                
+                print(f"✅ POSITION CLOSED")
+                print(f"   Symbol: {symbol}")
+                print(f"   Quantity: {position['qty']} shares")
+                print(f"   Entry: ${position['entry_price']:.2f}")
+                print(f"   Exit: ${price:.2f}")
+                print(f"   P&L: ${pnl:+,.2f} ({pnl_pct:+.2f}%)\n")
+                
+                # Update statistics
+                account_data['stats']['total_pnl'] += pnl
+                if pnl > 0:
+                    account_data['stats']['wins'] += 1
+                else:
+                    account_data['stats']['losses'] += 1
+                
+                # Send notification
+                self.notifier.send(
+                    f"💵 {symbol} CLOSED: ${pnl:+,.2f} ({pnl_pct:+.2f}%)"
+                )
+            
+            # Reset position
+            position['qty'] = 0
+            position['entry_price'] = 0
+            position['entry_time'] = None
+            position['highest_price'] = 0
+            position['type'] = None
+    
+    def process_bar(self, account_id: str, symbol: str, bar_data: Dict):
+        """Process incoming bar data - core trading logic"""
+        account_data = self.accounts.get(account_id)
+        if not account_data:
+            return
+        
+        try:
+            # Update activity tracking
+            self.last_activity_time = datetime.now()
+            self.stats['total_bars'] += 1
+            account_data['stats']['bars'] += 1
+            
+            # Store bar data
+            account_data['symbol_data'][symbol].append(bar_data)
+            
+            # STEP 1: Check for pending signal from previous bar
+            # (Enter on NEXT candle open after signal)
+            pending = self.signal_manager.get_pending_signal(symbol)
+            position = account_data['positions'][symbol]
+            
+            if pending and position['qty'] == 0:
+                entry_price = bar_data['open']  # ← Enter at OPEN of new candle
+                qty = pending['qty']
+                signal = pending['signal']
+                
+                print(f"\n🎯 EXECUTING PENDING ENTRY")
+                print(f"   Symbol: {symbol}")
+                print(f"   Entry Price: ${entry_price:.2f} (candle open)")
+                print(f"   Signal Price: ${pending['detection_price']:.2f} (previous candle)")
+                print(f"   Slippage: ${abs(entry_price - pending['detection_price']):.2f}")
+                
+                if signal == 1:  # Long entry
+                    order_id = self.place_order(account_id, symbol, qty, 'buy', entry_price)
+                    if order_id:
+                        self.update_position(account_id, symbol, qty, entry_price, 'buy')
+                
+                elif signal == -1:  # Short entry (if enabled)
+                    print(f"   SHORT signal - not implemented in this version")
+                
+                self.signal_manager.clear_pending_signal(symbol)
+                return
+            
+            # STEP 2: Check exit conditions for existing positions
+            if position['qty'] != 0:
+                exit_reason = self.risk_manager.check_exit_conditions(
+                    position,
+                    bar_data['close']
+                )
+                
+                if exit_reason:
+                    print(f"\n🚪 EXIT SIGNAL: {symbol} - {exit_reason}")
+                    qty = abs(position['qty'])
+                    order_id = self.place_order(account_id, symbol, qty, 'sell', bar_data['close'])
+                    if order_id:
+                        self.update_position(account_id, symbol, 0, bar_data['close'], 'sell')
+                return
+            
+            # STEP 3: Look for new entry signals (only if no position and market open)
+            if position['qty'] == 0 and self.is_market_hours():
+                # Calculate indicators
+                indicators = self.indicator_calculator.calculate_indicators(
+                    account_data['symbol_data'][symbol]
+                )
+                
+                if not indicators:
+                    return
+                
+                # Generate signal using protected entry logic
+                signal = self.signal_manager.generate_signal(symbol, indicators)
+                
+                if signal != 0:
+                    # Update statistics
+                    self.stats['total_signals'] += 1
+                    account_data['stats']['signals'] += 1
+                    
+                    if signal == 1:
+                        self.stats['long_signals'] += 1
+                    else:
+                        self.stats['short_signals'] += 1
+                    
+                    # Get buying power
+                    try:
+                        account = api.get_account()
+                        buying_power = float(account.buying_power)
+                    except:
+                        buying_power = 100000  # Fallback
+                    
+                    # Calculate position size
+                    qty = self.risk_manager.calculate_position_size(
+                        bar_data['close'],
+                        indicators['ATR'],
+                        buying_power
+                    )
+                    
+                    if qty > 0:
+                        # Register signal for next candle entry
+                        self.signal_manager.register_pending_signal(
+                            symbol, signal, qty, bar_data['close'], indicators
+                        )
+                    else:
+                        print(f"⚠️  Position size calculated as 0 for {symbol}")
+                        
+        except Exception as e:
+            print(f"⚠️  Error processing bar for {symbol}: {e}")
+    
+    def print_status(self):
+        """Print real-time status dashboard"""
+        while self.is_running:
+            try:
+                os.system('cls' if os.name == 'nt' else 'clear')
+                
+                print("\n" + "="*80)
+                print("🤖 PROTECTED TRADING BOT - LIVE STATUS DASHBOARD")
+                print("="*80)
+                
+                current_time = datetime.now()
+                uptime = current_time - self.bot_start_time
+                time_since_activity = current_time - self.last_activity_time
+                market_status = "🟢 OPEN" if self.is_market_hours() else "🔴 CLOSED"
+                
+                strategy_info = self.signal_manager.entry_logic.get_info()
+                
+                print(f"Time: {current_time.strftime('%Y-%m-%d %H:%M:%S')} | Market: {market_status}")
+                print(f"Uptime: {str(uptime).split('.')[0]} | Last Activity: {str(time_since_activity).split('.')[0]} ago")
+                print(f"Strategy: {strategy_info['strategy_name']} v{strategy_info['version']}")
+                print()
+                
+                # Account summaries
+                print("ACCOUNTS")
+                print("-"*80)
+                
+                total_portfolio = 0.0
+                total_buying_power = 0.0
+                total_day_pnl = 0.0
+                total_positions = 0
+                
+                for account_id, account_data in self.accounts.items():
+                    try:
+                        api = account_data['api']
+                        account = api.get_account()
+                        
+                        portfolio = float(account.portfolio_value)
+                        buying_power = float(account.buying_power)
+                        
+                        try:
+                            day_pnl = float(account.portfolio_value) - float(account.last_equity)
+                            day_pnl_pct = (day_pnl / float(account.last_equity) * 100) if float(account.last_equity) > 0 else 0
+                        except:
+                            day_pnl = 0.0
+                            day_pnl_pct = 0.0
+                        
+                        total_portfolio += portfolio
+                        total_buying_power += buying_power
+                        total_day_pnl += day_pnl
+                        
+                        positions_count = sum(1 for p in account_data['positions'].values() if p['qty'] != 0)
+                        total_positions += positions_count
+                        
+                        wins = account_data['stats']['wins']
+                        losses = account_data['stats']['losses']
+                        total_trades = wins + losses
+                        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+                        
+                        print(f"Account: {account_id}")
+                        print(f"  Portfolio: ${portfolio:,.2f} | BP: ${buying_power:,.2f}")
+                        print(f"  Day P&L: ${day_pnl:+,.2f} ({day_pnl_pct:+.2f}%)")
+                        print(f"  Positions: {positions_count} | W/L: {wins}/{losses} ({win_rate:.0f}%)")
+                        print()
+                        
+                    except Exception as e:
+                        print(f"Account: {account_id} - Error: {e}")
+                        print()
+                
+                print(f"TOTAL: ${total_portfolio:,.2f} | Day P&L: ${total_day_pnl:+,.2f} | Positions: {total_positions}")
+                print()
+                
+                # Statistics
+                print("STATISTICS")
+                print("-"*80)
+                print(f"Bars Received: {self.stats['total_bars']:,}")
+                print(f"Signals Generated: {self.stats['total_signals']} (Long: {self.stats['long_signals']}, Short: {self.stats['short_signals']})")
+                print(f"Trades: {self.stats['total_trades']} (Entries: {self.stats['entries_executed']}, Exits: {self.stats['exits_executed']})")
+                print()
+                
+                # Open positions
+                print("OPEN POSITIONS")
+                print("-"*80)
+                
+                has_positions = False
+                for account_id, account_data in self.accounts.items():
+                    for symbol in self.symbols:
+                        position = account_data['positions'][symbol]
+                        if position['qty'] != 0:
+                            has_positions = True
+                            
+                            # Get current price
+                            symbol_data = account_data['symbol_data'][symbol]
+                            if symbol_data:
+                                current_price = symbol_data[-1]['close']
+                                pnl = position['qty'] * (current_price - position['entry_price'])
+                                pnl_pct = (current_price - position['entry_price']) / position['entry_price'] * 100
+                            else:
+                                current_price = position['entry_price']
+                                pnl = 0
+                                pnl_pct = 0
+                            
+                            duration = datetime.now() - position['entry_time'] if position['entry_time'] else timedelta(0)
+                            
+                            print(f"[{account_id}] {symbol}:")
+                            print(f"  {position['qty']} shares @ ${position['entry_price']:.2f}")
+                            print(f"  Current: ${current_price:.2f} | P&L: ${pnl:+,.2f} ({pnl_pct:+.2f}%)")
+                            print(f"  Duration: {str(duration).split('.')[0]}")
+                            print()
+                
+                if not has_positions:
+                    print("No open positions")
+                    print()
+                
+                print("="*80)
+                print("Status updates every 5 minutes | Press Ctrl+C to stop")
+                print("="*80)
+                
+                time.sleep(300)  # Update every 5 minutes
+                
+            except Exception as e:
+                print(f"⚠️  Status display error: {e}")
+                time.sleep(300)
+    
+    def start(self):
+        """Start the protected trading bot"""
+        print("\n🚀 STARTING PROTECTED TRADING BOT")
+        print("="*70)
+        
+        # Setup all accounts
+        print("\nConnecting to accounts...")
+        successful_accounts = 0
+        
+        for i, config in enumerate(self.account_configs):
+            print(f"\n[{i+1}/{len(self.account_configs)}] Connecting...")
+            account_id = self.setup_account(config)
+            if account_id:
+                successful_accounts += 1
+        
+        if successful_accounts == 0:
+            print("\n❌ ERROR: No accounts connected successfully")
+            self.notifier.send("❌ Bot failed to start - No accounts connected", priority="high")
+            return
+        
+        print(f"\n✅ Successfully connected {successful_accounts} account(s)")
+        
+        # Sync existing positions
+        print("\nSyncing existing positions...")
+        for account_id, account_data in self.accounts.items():
+            try:
+                api = account_data['api']
+                positions = api.list_positions()
+                
+                if positions:
+                    print(f"\n  Account: {account_id}")
+                    for pos in positions:
+                        symbol = pos.symbol
+                        if symbol in self.symbols:
+                            qty = int(float(pos.qty))
+                            entry_price = float(pos.avg_entry_price)
+                            current_price = float(pos.current_price)
+                            
+                            account_data['positions'][symbol].update({
+                                'qty': qty,
+                                'entry_price': entry_price,
+                                'entry_time': datetime.now(),
+                                'highest_price': current_price,
+                                'type': 'LONG' if qty > 0 else 'SHORT'
+                            })
+                            
+                            pnl_pct = (current_price - entry_price) / entry_price * 100
+                            print(f"    {symbol}: {qty} shares @ ${entry_price:.2f} (P&L: {pnl_pct:+.2f}%)")
+                else:
+                    print(f"\n  Account: {account_id} - No existing positions")
+                    
+            except Exception as e:
+                print(f"  Position sync failed for {account_id}: {e}")
+        
+        # Start status monitoring thread
+        self.is_running = True
+        status_thread = threading.Thread(target=self.print_status, daemon=True)
+        status_thread.start()
+        
+        # Send startup notification
+        account_ids = ', '.join(self.accounts.keys())
+        strategy_info = self.signal_manager.entry_logic.get_info()
+        
+        self.notifier.send(
+            f"🤖 Protected Trading Bot Started\n"
+            f"Strategy: {strategy_info['strategy_name']} v{strategy_info['version']}\n"
+            f"Accounts: {account_ids}\n"
+            f"Symbols: {', '.join(self.symbols)}"
+        )
+        
+        print("\n✅ Bot is now running")
+        print("📊 Real-time dashboard will appear in 3 seconds...")
+        time.sleep(3)
+        
+        # Main polling loop
+        print("\n📡 Starting market data polling (60-second intervals)...\n")
+        
+        while self.is_running:
+            try:
+                # Poll each account
+                for account_id, account_data in self.accounts.items():
+                    # Fetch latest bars
+                    bars_data = self.get_latest_bars(account_id)
+                    
+                    if bars_data:
+                        # Process each symbol
+                        for symbol, bar_data in bars_data.items():
+                            self.process_bar(account_id, symbol, bar_data)
+                    else:
+                        # No data received - connection issue?
+                        pass
+                
+                # Wait 60 seconds before next poll
+                time.sleep(60)
+                
+            except KeyboardInterrupt:
+                self.is_running = False
+                print("\n\n🛑 Bot stopped by user")
+                self.notifier.send("🛑 Bot stopped - Manual shutdown")
+                break
+                
+            except Exception as e:
+                print(f"\n⚠️  Polling error: {e}")
+                print("Retrying in 30 seconds...")
+                time.sleep(30)
+
+
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
+
+def run_protected_trading_bot():
+    """
+    Main function to run the protected trading bot.
+    Configure your settings below and run.
+    """
+    
+    print("\n" + "="*80)
+    print("🤖 PROTECTED TRADING BOT - INITIALIZATION")
+    print("="*80)
+    
+    strategy_info = ProtectedEntryLogic().get_info()
+    print(f"\nStrategy: {strategy_info['strategy_name']}")
+    print(f"Version: {strategy_info['version']}")
+    print(f"Last Modified: {strategy_info['last_modified']}")
+    print("\n⚠️  Core entry logic is PROTECTED and verified")
+    print("="*80 + "\n")
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # CONFIGURATION SECTION - MODIFY THESE SETTINGS
+    # ═══════════════════════════════════════════════════════════════════════
+    
+    # Account Configurations
+    # Add/remove accounts as needed. Each account should have:
+    # - api_key: Your Alpaca API key
+    # - secret_key: Your Alpaca secret key
+    # - base_url: Paper trading or live trading URL
+    
+    account_configs = [
+        {
+            "api_key": "YOUR_API_KEY_HERE",
+            "secret_key": "YOUR_SECRET_KEY_HERE",
+            "base_url": "https://paper-api.alpaca.markets"  # Paper trading
+            # Use "https://api.alpaca.markets" for LIVE trading
+        },
+        # Uncomment to add a second account:
+        # {
+        #     "api_key": "YOUR_SECOND_API_KEY",
+        #     "secret_key": "YOUR_SECOND_SECRET_KEY",
+        #     "base_url": "https://paper-api.alpaca.markets"
+        # }
+    ]
+    
+    # Trading Symbols
+    # List of symbols to monitor and trade
+    symbols = [
+        'GOOGL', 'PDD', 'MSFT', 'APP', 'PEP', 
+        'AVGO', 'RDDT', 'CAT', 'LMT'
+    ]
+    
+    # Initial Capital (for position sizing calculations)
+    initial_capital = 250000
+    
+    # Discord Webhook (Optional)
+    # Get webhook URL from: Discord Server Settings > Integrations > Webhooks
+    discord_webhook = None  # "https://discord.com/api/webhooks/YOUR_WEBHOOK_URL"
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # END OF CONFIGURATION
+    # ═══════════════════════════════════════════════════════════════════════
+    
+    # Validate configuration
+    if account_configs[0]['api_key'] == "YOUR_API_KEY_HERE":
+        print("❌ ERROR: Please configure your Alpaca API credentials")
+        print("\n📝 Setup Instructions:")
+        print("1. Get API keys from: https://alpaca.markets")
+        print("2. Edit the 'account_configs' section above")
+        print("3. Replace YOUR_API_KEY_HERE and YOUR_SECRET_KEY_HERE")
+        print("4. For paper trading: use https://paper-api.alpaca.markets")
+        print("5. For live trading: use https://api.alpaca.markets")
+        print("\n⚠️  Never share your API keys or commit them to version control!")
+        return
+    
+    # Check trading mode
+    is_paper = "paper-api" in account_configs[0]['base_url'].lower()
+    mode = "PAPER TRADING (Safe)" if is_paper else "⚠️  LIVE TRADING (REAL MONEY)"
+    
+    print(f"\n📊 CONFIGURATION SUMMARY")
+    print("-"*70)
+    print(f"Trading Mode: {mode}")
+    print(f"Number of Accounts: {len(account_configs)}")
+    print(f"Symbols to Trade: {', '.join(symbols)}")
+    print(f"Initial Capital: ${initial_capital:,}")
+    print(f"Discord Notifications: {'Enabled' if discord_webhook else 'Disabled'}")
+    print("-"*70)
+    
+    # Safety confirmation for live trading
+    if not is_paper:
+        print("\n" + "="*70)
+        print("⚠️  ⚠️  ⚠️  WARNING: LIVE TRADING MODE DETECTED ⚠️  ⚠️  ⚠️")
+        print("="*70)
+        print("You are about to trade with REAL MONEY!")
+        print("This bot will place actual market orders that will execute.")
+        print("Make sure you understand the risks involved.")
+        print("="*70)
+        
+        confirm1 = input("\nType 'CONFIRM' to proceed with live trading: ").strip()
+        confirm2 = input("Type 'YES' to double-confirm: ").strip()
+        confirm3 = input("Type 'LIVE TRADING' to triple-confirm: ").strip()
+        
+        if confirm1 != 'CONFIRM' or confirm2 != 'YES' or confirm3 != 'LIVE TRADING':
+            print("\n✅ Live trading cancelled (smart choice!)")
+            print("💡 Tip: Use paper trading to test first")
+            return
+        
+        print("\n⚠️  Proceeding with LIVE TRADING...")
+        print("Bot will start in 5 seconds. Press Ctrl+C to cancel.\n")
+        time.sleep(5)
+        
+    else:
+        print("\n✅ Paper Trading Mode - Safe to test")
+        input("\nPress Enter to start the bot...")
+    
+    try:
+        # Initialize the bot
+        bot = ProtectedTradingBot(
+            account_configs=account_configs,
+            symbols=symbols,
+            initial_capital=initial_capital,
+            discord_webhook=discord_webhook
+        )
+        
+        # Start trading
+        bot.start()
+        
+    except KeyboardInterrupt:
+        print("\n\n🛑 Bot stopped by user")
+        
+    except Exception as e:
+        print(f"\n❌ CRITICAL ERROR: {e}")
+        print("\n🔧 Troubleshooting:")
+        print("1. Verify API credentials are correct")
+        print("2. Check internet connection")
+        print("3. Ensure Alpaca account is active and funded")
+        print("4. Verify trading permissions for your account")
+        print("5. Check if symbols are tradeable")
+        
+        import traceback
+        print("\n📋 Full error details:")
+        traceback.print_exc()
+
+
+# ============================================================================
+# ENTRY POINT
+# ============================================================================
+
+if __name__ == "__main__":
+    run_protected_trading_bot()
